@@ -1,0 +1,39 @@
+version: '3.8'
+services:
+  analyzer:
+    build: .
+    env_file: .env
+    command: python3 analyze.py
+    volumes:
+      - .:/app
+      - /volume1/homes/reolink:/images:ro
+    restart: always
+
+  responder:
+    build: .
+    env_file: .env
+    command: python3 responder.py
+    ports:
+      - "5050:5050"
+    volumes:
+      - .:/app
+      - /volume1/docker/shared_summary:/app/shared_summary
+      - /volume1/docker/logs:/app/logs   # ← 追加
+    restart: always
+    networks:
+      - catnet  # ← 追加
+
+  rotator:
+    build: .
+    env_file: .env
+    command: sh -c "while true; do python3 rotate_logs.py; sleep 86400; done"
+    volumes:
+      - .:/app
+      - /volume1/homes/reolink:/images          # ← 追加（mp4/jpg削除用）
+      - /volume1/docker/shared_summary:/app/shared_summary  # ← 追加（camera_shots削除用）
+    restart: always
+
+networks:
+  catnet:
+    external: true
+    name: cat_scale_default

@@ -1,0 +1,15 @@
+.env
+*.log
+*.jpg
+*.jpeg
+*.png
+*.mp4
+*.avi
+__pycache__/
+*.pyc
+shared_summary/
+.Trash-0/
+*.back
+*.stable
+archive/
+summary.txt
