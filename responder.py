@@ -13,6 +13,7 @@ PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
 EDITOR_BASE_URL = f"{PUBLIC_BASE_URL}/editor" if PUBLIC_BASE_URL else "/editor"
 CAT_SCALE_BASE_URL = os.getenv("CAT_SCALE_BASE_URL", "http://cat-scale:8000").rstrip("/")
 MANUAL_EVENT_TOKEN = os.getenv("MANUAL_EVENT_TOKEN", "")
+ALEXA_EVENT_TOKEN = os.getenv("ALEXA_EVENT_TOKEN", "")
 
 app = Flask(__name__)
 
@@ -303,6 +304,118 @@ def handle_postback(event):
 # ==============================
 # 今日のログ取得
 # ==============================
+
+
+# ==============================
+# Alexa manual event endpoint
+# ==============================
+def alexa_response(text, end_session=True):
+    return {
+        "version": "1.0",
+        "response": {
+            "outputSpeech": {"type": "PlainText", "text": text},
+            "shouldEndSession": end_session,
+        },
+    }
+
+
+def verify_alexa_token(payload):
+    if not ALEXA_EVENT_TOKEN:
+        return True
+    supplied = request.headers.get("X-Hachi-Token") or request.args.get("token")
+    if not supplied and isinstance(payload, dict):
+        supplied = payload.get("token")
+    return supplied == ALEXA_EVENT_TOKEN
+
+
+def normalize_manual_label(value):
+    text = str(value or "").strip().lower()
+    if text in {"poop", "poo", "feces", "stool", "unchi", "unko"}:
+        return "poop"
+    if text in {"pee", "urine", "oshikko"}:
+        return "pee"
+    if text in {"entry_only", "entry", "enter", "entered", "only_entry"}:
+        return "entry_only"
+    return None
+
+
+def alexa_slot_value(payload, *names):
+    try:
+        slots = payload.get("request", {}).get("intent", {}).get("slots", {})
+        for name in names:
+            slot = slots.get(name) or slots.get(name.lower()) or slots.get(name.upper())
+            if not slot:
+                continue
+            resolutions = slot.get("resolutions", {}).get("resolutionsPerAuthority", [])
+            for resolution in resolutions:
+                values = resolution.get("values") or []
+                if values:
+                    resolved = values[0].get("value", {})
+                    return resolved.get("id") or resolved.get("name")
+            if "value" in slot:
+                return slot["value"]
+    except Exception:
+        pass
+    return None
+
+
+def parse_alexa_event(payload):
+    payload = payload or {}
+    label = normalize_manual_label(
+        request.args.get("label")
+        or request.form.get("label")
+        or payload.get("label")
+        or alexa_slot_value(payload, "event_type", "eventType", "label")
+    )
+
+    spoken_text = " ".join(
+        str(v) for v in [
+            request.args.get("text"),
+            request.form.get("text"),
+            payload.get("text") if isinstance(payload, dict) else None,
+        ] if v
+    )
+    if not label and spoken_text:
+        label, _ = parse_manual_text_command(spoken_text)
+
+    time_value = (
+        request.args.get("datetime")
+        or request.args.get("time")
+        or request.form.get("datetime")
+        or request.form.get("time")
+        or payload.get("datetime")
+        or payload.get("time")
+        or alexa_slot_value(payload, "time", "event_time", "eventTime")
+    )
+    event_time = parse_line_datetime(time_value) or parse_time_only(time_value)
+    if not event_time and spoken_text:
+        event_time = parse_time_only(spoken_text)
+    return label, event_time
+
+
+@app.route("/alexa/manual_event", methods=["GET", "POST"])
+def alexa_manual_event():
+    payload = request.get_json(silent=True) or {}
+    if not verify_alexa_token(payload):
+        return alexa_response("Authentication failed."), 403
+
+    alexa_request_type = payload.get("request", {}).get("type") if isinstance(payload, dict) else None
+    if alexa_request_type == "LaunchRequest":
+        return alexa_response("Hachi toilet is ready. Say poop, pee, or entry only.", end_session=False)
+
+    label, event_time = parse_alexa_event(payload)
+    if not label:
+        return alexa_response("Please say poop, pee, or entry only.", end_session=False), 400
+
+    try:
+        result = call_manual_event(label, source="alexa", event_time=event_time)
+        status = result.get("status", "ok") if isinstance(result, dict) else "ok"
+        time_text = manual_event_datetime_value(event_time) if event_time else "current time"
+        return alexa_response(f"Recorded {manual_event_display(label)} at {time_text}.")
+    except Exception as e:
+        print("Alexa manual event error:", e)
+        return alexa_response("Failed to record the event."), 500
+
 def get_today_lines(path):
     if not os.path.exists(path):
         return []
