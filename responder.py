@@ -3,13 +3,16 @@ import requests
 import re
 from flask import Flask, request, send_from_directory
 from datetime import datetime, timedelta
+from urllib.parse import parse_qs
 from google import genai
 from dotenv import load_dotenv
 
 load_dotenv()
 
-PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL")
-EDITOR_BASE_URL = os.getenv("PUBLIC_BASE_URL") + "/editor"
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
+EDITOR_BASE_URL = f"{PUBLIC_BASE_URL}/editor" if PUBLIC_BASE_URL else "/editor"
+CAT_SCALE_BASE_URL = os.getenv("CAT_SCALE_BASE_URL", "http://cat-scale:8000").rstrip("/")
+MANUAL_EVENT_TOKEN = os.getenv("MANUAL_EVENT_TOKEN", "")
 
 app = Flask(__name__)
 
@@ -36,6 +39,132 @@ def extract_datetime(line):
         return datetime.strptime(match2.group(1), "%Y%m%d%H%M%S")
 
     return None
+
+
+# ==============================
+# LINE送信ヘルパー
+# ==============================
+def line_headers():
+    return {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {LINE_TOKEN}"
+    }
+
+
+def reply_messages(reply_token, messages, timeout=5):
+    payload = {"replyToken": reply_token, "messages": messages}
+    return requests.post(
+        "https://api.line.me/v2/bot/message/reply",
+        headers=line_headers(),
+        json=payload,
+        timeout=timeout
+    )
+
+
+def push_messages(user_id, messages, timeout=5):
+    payload = {"to": user_id, "messages": messages}
+    return requests.post(
+        "https://api.line.me/v2/bot/message/push",
+        headers=line_headers(),
+        json=payload,
+        timeout=timeout
+    )
+
+
+# ==============================
+# cat_scale手動イベント登録
+# ==============================
+def manual_event_display(label):
+    return {
+        "poop": "うんち",
+        "pee": "おしっこ",
+        "entry_only": "入出のみ",
+    }.get(label, label)
+
+
+def call_manual_event(label, source="line"):
+    params = {"label": label, "source": source}
+    headers = {}
+    if MANUAL_EVENT_TOKEN:
+        params["token"] = MANUAL_EVENT_TOKEN
+        headers["Authorization"] = f"Bearer {MANUAL_EVENT_TOKEN}"
+
+    url = f"{CAT_SCALE_BASE_URL}/manual_event"
+    res = requests.post(url, params=params, headers=headers, timeout=8)
+    try:
+        body = res.json()
+    except Exception:
+        body = {"text": res.text}
+
+    if res.status_code >= 400:
+        raise RuntimeError(f"{res.status_code}: {body}")
+    return body
+
+
+def toilet_action_template():
+    return {
+        "type": "template",
+        "altText": "トイレ判定を修正できます",
+        "template": {
+            "type": "buttons",
+            "title": "直近の判定を修正",
+            "text": "直近15分の記録を手動ラベルで上書きします",
+            "actions": [
+                {
+                    "type": "postback",
+                    "label": "うんちにする",
+                    "data": "action=manual_event&label=poop",
+                    "displayText": "直近をうんちにする"
+                },
+                {
+                    "type": "postback",
+                    "label": "おしっこにする",
+                    "data": "action=manual_event&label=pee",
+                    "displayText": "直近をおしっこにする"
+                },
+                {
+                    "type": "postback",
+                    "label": "入出のみにする",
+                    "data": "action=manual_event&label=entry_only",
+                    "displayText": "直近を入出のみにする"
+                },
+                {
+                    "type": "uri",
+                    "label": "編集画面を開く",
+                    "uri": EDITOR_BASE_URL
+                }
+            ]
+        }
+    }
+
+
+def handle_postback(event):
+    reply_token = event.get("replyToken")
+    data = event.get("postback", {}).get("data", "")
+    params = parse_qs(data)
+    action = params.get("action", [""])[0]
+
+    if action != "manual_event":
+        if reply_token:
+            reply_messages(reply_token, [{"type": "text", "text": "未対応の操作です。"}])
+        return
+
+    label = params.get("label", [""])[0]
+    if label not in {"poop", "pee", "entry_only"}:
+        if reply_token:
+            reply_messages(reply_token, [{"type": "text", "text": "不明なラベルです。"}])
+        return
+
+    try:
+        result = call_manual_event(label, source="line_postback")
+        status = result.get("status", "ok") if isinstance(result, dict) else "ok"
+        text = f"直近の記録を「{manual_event_display(label)}」にしました。({status})"
+    except Exception as e:
+        print("Manual event error:", e)
+        text = f"手動ラベルの登録に失敗しました: {e}"
+
+    if reply_token:
+        reply_messages(reply_token, [{"type": "text", "text": text}])
 
 
 # ==============================
@@ -201,10 +330,7 @@ def send_edit_button(user_id):
     try:
         res = requests.post(
             "https://api.line.me/v2/bot/message/push",
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {LINE_TOKEN}"
-            },
+            headers=line_headers(),
             json=payload,
             timeout=3
         )
@@ -228,13 +354,17 @@ def callback():
     reply_token = event.get("replyToken")
     user_id = event.get("source", {}).get("userId")
 
+    if event.get("type") == "postback":
+        handle_postback(event)
+        return "OK", 200
+
     if not reply_token or "message" not in event:
         return "OK", 200
 
     user_msg = event["message"].get("text", "")
     print("User:", user_msg)
 
-    is_toilet = any(k in user_msg for k in ["トイレ", "おしっこ", "うんこ", "便"])
+    is_toilet = any(k in user_msg for k in ["トイレ", "おしっこ", "うんこ", "うんち", "便"])
     is_summary = any(k in user_msg for k in ["まとめ", "今日", "報告"])
     is_now = any(k in user_msg for k in ["今", "状況", "なにしてる"])
     is_weight = any(k in user_msg for k in ["体重", "kg", "きろ"])
@@ -250,19 +380,7 @@ def callback():
     # ① まず即返信（超重要）
     # =========================
     try:
-        quick_payload = {
-            "replyToken": reply_token,
-            "messages": [{"type": "text", "text": "ちょっと待っててね🐾 集計中です…"}]
-        }
-        requests.post(
-            "https://api.line.me/v2/bot/message/reply",
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {LINE_TOKEN}"
-            },
-            json=quick_payload,
-            timeout=3
-        )
+        reply_messages(reply_token, [{"type": "text", "text": "ちょっと待っててね🐾 集計中です…"}], timeout=3)
     except Exception as e:
         print("Quick reply error:", e)
         return "OK", 200
@@ -272,6 +390,7 @@ def callback():
     # =========================
     jst_now = datetime.utcnow() + timedelta(hours=9)
     avg_weight = None  # push送信ブロックで参照するため先に初期化
+    include_toilet_buttons = False
 
     if is_edit:
         send_edit_button(user_id)
@@ -311,6 +430,7 @@ def callback():
             f"{notes_str + chr(10) if notes_str else ''}\n"
             f"{summary}"
         )
+        include_toilet_buttons = True
 
     elif is_summary:
         lines = get_today_lines(CAMERA_LOG)
@@ -330,6 +450,9 @@ def callback():
     try:
         messages = [{"type": "text", "text": msg}]
 
+        if include_toilet_buttons:
+            messages.append(toilet_action_template())
+
         if is_weight and avg_weight is not None:
             image_url = f"{PUBLIC_BASE_URL}/shared_summary/last_month_weight.png"
             print("Image URL =", image_url)
@@ -339,20 +462,7 @@ def callback():
                 "previewImageUrl": image_url
             })
 
-        push_payload = {
-            "to": user_id,
-            "messages": messages
-        }
-
-        res = requests.post(
-            "https://api.line.me/v2/bot/message/push",
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {LINE_TOKEN}"
-            },
-            json=push_payload,
-            timeout=5
-        )
+        res = push_messages(user_id, messages, timeout=5)
         print("Push status:", res.status_code, res.text)
 
     except Exception as e:
@@ -379,7 +489,7 @@ def proxy_editor(path):
         url=target,
         data=request.get_data(),
         headers={k: v for k, v in request.headers if k != "Host"},
-        params=request.args,        # ★追加
+        params=request.args,
         allow_redirects=False
     )
     if resp.status_code in (301, 302):
