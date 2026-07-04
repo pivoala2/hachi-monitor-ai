@@ -149,7 +149,7 @@ def manual_event_display(label):
     return {
         "poop": "うんち",
         "pee": "おしっこ",
-        "entry_only": "入出のみ",
+        "entry_only": "出入りのみ",
     }.get(label, label)
 
 
@@ -159,7 +159,7 @@ def parse_manual_text_command(text):
         label = "poop"
     elif any(k in text for k in ["おしっこ", "尿", "pee"]):
         label = "pee"
-    elif any(k in text for k in ["入出", "入退", "入っただけ", "entry"]):
+    elif any(k in text for k in ["出入り", "入出", "入退", "入っただけ", "entry"]):
         label = "entry_only"
 
     if not label:
@@ -250,9 +250,9 @@ def immediate_toilet_action_template():
                 },
                 {
                     "type": "postback",
-                    "label": "入出のみにする",
+                    "label": "出入りのみにする",
                     "data": "action=manual_event&label=entry_only",
-                    "displayText": "今を入出のみにする"
+                    "displayText": "今を出入りのみにする"
                 },
                 {
                     "type": "uri",
@@ -296,7 +296,7 @@ def timed_toilet_action_template():
                 },
                 {
                     "type": "datetimepicker",
-                    "label": "入出のみ時刻指定",
+                    "label": "出入りのみ時刻指定",
                     "data": "action=manual_event&label=entry_only",
                     "mode": "datetime",
                     "initial": line_datetime_value(now),
@@ -345,12 +345,12 @@ def handle_postback(event):
 # ==============================
 # Alexa manual event endpoint
 # ==============================
-ALEXA_HELP_TEXT = "うんち、おしっこ、入出のみ、のどれかを記録できます。たとえば、うんちしたよ、と言ってください。"
-ALEXA_REPROMPT_TEXT = "うんち、おしっこ、入出のみ、のどれですか？"
+ALEXA_HELP_TEXT = "うんち、おしっこ、出入りのみ、のどれかを記録できます。たとえば、うんちしたよ、と言ってください。"
+ALEXA_REPROMPT_TEXT = "うんち、おしっこ、出入りのみ、のどれですか？"
 ALEXA_LABEL_SPEECH = {
     "poop": "うんち",
     "pee": "おしっこ",
-    "entry_only": "入出のみ",
+    "entry_only": "出入りのみ",
 }
 
 
@@ -384,7 +384,7 @@ def normalize_manual_label(value):
         return "poop"
     if text in {"pee", "urine", "oshikko", "おしっこ", "しっこ", "尿", "小", "小便"}:
         return "pee"
-    if text in {"entry_only", "entry", "enter", "entered", "only_entry", "入出のみ", "入出", "入っただけ", "入った", "出入りのみ"}:
+    if text in {"entry_only", "entry", "enter", "entered", "only_entry", "出入りのみ", "出入り", "入出のみ", "入出", "入っただけ", "入った"}:
         return "entry_only"
     return None
 
