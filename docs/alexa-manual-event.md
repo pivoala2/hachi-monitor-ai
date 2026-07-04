@@ -97,3 +97,88 @@ Set `ALEXA_EVENT_TOKEN` in `.env` to require a shared token. The caller can pass
 ?token=<token>
 X-Hachi-Token: <token>
 ```
+
+
+## Alexa response behavior
+
+The endpoint returns Alexa Skill response JSON for:
+
+```text
+LaunchRequest
+IntentRequest
+SessionEndedRequest
+AMAZON.HelpIntent
+AMAZON.CancelIntent
+AMAZON.StopIntent
+AMAZON.FallbackIntent
+```
+
+Successful recording speaks back in Japanese, for example:
+
+```text
+現在時刻 の記録を、うんちにしました。
+```
+
+Unclear input keeps the session open and asks:
+
+```text
+うんち、おしっこ、入出のみ、のどれですか？
+```
+
+## Alexa Developer Console JSON example
+
+Use Custom skill / Japanese (JP). In JSON Editor, adapt this interaction model:
+
+```json
+{
+  "interactionModel": {
+    "languageModel": {
+      "invocationName": "はちトイレ",
+      "intents": [
+        {
+          "name": "ManualToiletEventIntent",
+          "slots": [
+            { "name": "event_type", "type": "TOILET_EVENT_TYPE" },
+            { "name": "time", "type": "AMAZON.TIME" }
+          ],
+          "samples": [
+            "{event_type}したよ",
+            "{event_type}を記録して",
+            "{time}に{event_type}したよ",
+            "{time}に{event_type}を記録して"
+          ]
+        },
+        { "name": "AMAZON.HelpIntent", "samples": [] },
+        { "name": "AMAZON.CancelIntent", "samples": [] },
+        { "name": "AMAZON.StopIntent", "samples": [] },
+        { "name": "AMAZON.FallbackIntent", "samples": [] }
+      ],
+      "types": [
+        {
+          "name": "TOILET_EVENT_TYPE",
+          "values": [
+            {
+              "id": "poop",
+              "name": { "value": "うんち", "synonyms": ["うんこ", "便", "大便"] }
+            },
+            {
+              "id": "pee",
+              "name": { "value": "おしっこ", "synonyms": ["しっこ", "尿", "小便"] }
+            },
+            {
+              "id": "entry_only",
+              "name": { "value": "入出のみ", "synonyms": ["入っただけ", "入出", "出入りのみ"] }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
+```
+
+Endpoint setting:
+
+```text
+HTTPS: https://<PUBLIC_BASE_URL>/alexa/manual_event
+```

@@ -310,14 +310,27 @@ def handle_postback(event):
 # ==============================
 # Alexa manual event endpoint
 # ==============================
-def alexa_response(text, end_session=True):
-    return {
-        "version": "1.0",
-        "response": {
-            "outputSpeech": {"type": "PlainText", "text": text},
-            "shouldEndSession": end_session,
-        },
+ALEXA_HELP_TEXT = "うんち、おしっこ、入出のみ、のどれかを記録できます。たとえば、うんちしたよ、と言ってください。"
+ALEXA_REPROMPT_TEXT = "うんち、おしっこ、入出のみ、のどれですか？"
+ALEXA_LABEL_SPEECH = {
+    "poop": "うんち",
+    "pee": "おしっこ",
+    "entry_only": "入出のみ",
+}
+
+
+def alexa_response(text, end_session=True, reprompt=None):
+    response = {
+        "outputSpeech": {"type": "PlainText", "text": text},
+        "shouldEndSession": end_session,
     }
+    if reprompt:
+        response["reprompt"] = {"outputSpeech": {"type": "PlainText", "text": reprompt}}
+    return {"version": "1.0", "response": response}
+
+
+def alexa_label_speech(label):
+    return ALEXA_LABEL_SPEECH.get(label, manual_event_display(label))
 
 
 def verify_alexa_token(payload):
@@ -331,11 +344,23 @@ def verify_alexa_token(payload):
 
 def normalize_manual_label(value):
     text = str(value or "").strip().lower()
-    if text in {"poop", "poo", "feces", "stool", "unchi", "unko"}:
+    text = re.sub(r"[\s　。！？!?,、\.]+", "", text)
+    if text in {"poop", "poo", "feces", "stool", "unchi", "unko", "うんち", "うんこ", "便", "大", "大便"}:
         return "poop"
-    if text in {"pee", "urine", "oshikko"}:
+    if text in {"pee", "urine", "oshikko", "おしっこ", "しっこ", "尿", "小", "小便"}:
         return "pee"
-    if text in {"entry_only", "entry", "enter", "entered", "only_entry"}:
+    if text in {"entry_only", "entry", "enter", "entered", "only_entry", "入出のみ", "入出", "入っただけ", "入った", "出入りのみ"}:
+        return "entry_only"
+    return None
+
+
+def label_from_alexa_intent_name(intent_name):
+    name = str(intent_name or "").lower()
+    if "poop" in name or "unko" in name or "unchi" in name:
+        return "poop"
+    if "pee" in name or "urine" in name or "oshikko" in name:
+        return "pee"
+    if "entry" in name:
         return "entry_only"
     return None
 
@@ -344,7 +369,8 @@ def alexa_slot_value(payload, *names):
     try:
         slots = payload.get("request", {}).get("intent", {}).get("slots", {})
         for name in names:
-            slot = slots.get(name) or slots.get(name.lower()) or slots.get(name.upper())
+            candidates = {name, name.lower(), name.upper(), name[:1].upper() + name[1:]}
+            slot = next((slots.get(candidate) for candidate in candidates if slots.get(candidate)), None)
             if not slot:
                 continue
             resolutions = slot.get("resolutions", {}).get("resolutionsPerAuthority", [])
@@ -360,22 +386,30 @@ def alexa_slot_value(payload, *names):
     return None
 
 
-def parse_alexa_event(payload):
-    payload = payload or {}
-    label = normalize_manual_label(
-        request.args.get("label")
-        or request.form.get("label")
-        or payload.get("label")
-        or alexa_slot_value(payload, "event_type", "eventType", "label")
-    )
-
-    spoken_text = " ".join(
+def alexa_utterance_text(payload):
+    return " ".join(
         str(v) for v in [
             request.args.get("text"),
             request.form.get("text"),
             payload.get("text") if isinstance(payload, dict) else None,
+            alexa_slot_value(payload, "phrase", "text", "utterance"),
         ] if v
     )
+
+
+def parse_alexa_event(payload):
+    payload = payload or {}
+    intent_name = payload.get("request", {}).get("intent", {}).get("name") if isinstance(payload, dict) else None
+    spoken_text = alexa_utterance_text(payload)
+
+    label = normalize_manual_label(
+        request.args.get("label")
+        or request.form.get("label")
+        or payload.get("label")
+        or alexa_slot_value(payload, "event_type", "eventType", "EventType", "label")
+    )
+    if not label:
+        label = label_from_alexa_intent_name(intent_name)
     if not label and spoken_text:
         label, _ = parse_manual_text_command(spoken_text)
 
@@ -386,7 +420,7 @@ def parse_alexa_event(payload):
         or request.form.get("time")
         or payload.get("datetime")
         or payload.get("time")
-        or alexa_slot_value(payload, "time", "event_time", "eventTime")
+        or alexa_slot_value(payload, "time", "Time", "event_time", "eventTime", "EventTime")
     )
     event_time = parse_line_datetime(time_value) or parse_time_only(time_value)
     if not event_time and spoken_text:
@@ -398,24 +432,34 @@ def parse_alexa_event(payload):
 def alexa_manual_event():
     payload = request.get_json(silent=True) or {}
     if not verify_alexa_token(payload):
-        return alexa_response("Authentication failed."), 403
+        return alexa_response("認証に失敗しました。"), 403
 
-    alexa_request_type = payload.get("request", {}).get("type") if isinstance(payload, dict) else None
+    request_obj = payload.get("request", {}) if isinstance(payload, dict) else {}
+    alexa_request_type = request_obj.get("type")
+    intent_name = request_obj.get("intent", {}).get("name")
+
     if alexa_request_type == "LaunchRequest":
-        return alexa_response("Hachi toilet is ready. Say poop, pee, or entry only.", end_session=False)
+        return alexa_response(ALEXA_HELP_TEXT, end_session=False, reprompt=ALEXA_REPROMPT_TEXT)
+    if alexa_request_type == "SessionEndedRequest":
+        return "", 200
+    if intent_name in {"AMAZON.HelpIntent", "AMAZON.FallbackIntent"}:
+        return alexa_response(ALEXA_HELP_TEXT, end_session=False, reprompt=ALEXA_REPROMPT_TEXT)
+    if intent_name in {"AMAZON.CancelIntent", "AMAZON.StopIntent"}:
+        return alexa_response("わかりました。")
 
     label, event_time = parse_alexa_event(payload)
     if not label:
-        return alexa_response("Please say poop, pee, or entry only.", end_session=False), 400
+        return alexa_response(ALEXA_REPROMPT_TEXT, end_session=False, reprompt=ALEXA_REPROMPT_TEXT)
 
     try:
         result = call_manual_event(label, source="alexa", event_time=event_time)
         status = result.get("status", "ok") if isinstance(result, dict) else "ok"
-        time_text = manual_event_datetime_value(event_time) if event_time else "current time"
-        return alexa_response(f"Recorded {manual_event_display(label)} at {time_text}.")
+        time_text = manual_event_datetime_value(event_time) if event_time else "現在時刻"
+        print(f"Alexa manual event recorded: label={label} time={time_text} status={status}")
+        return alexa_response(f"{time_text} の記録を、{alexa_label_speech(label)}にしました。")
     except Exception as e:
         print("Alexa manual event error:", e)
-        return alexa_response("Failed to record the event."), 500
+        return alexa_response("記録に失敗しました。あとで確認してください。")
 
 def get_today_lines(path):
     if not os.path.exists(path):
