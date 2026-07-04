@@ -25,8 +25,69 @@ client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 
 # ==============================
-# 共通：日時抽出（両形式対応）
+# 共通：日時処理
 # ==============================
+def jst_now():
+    return datetime.utcnow() + timedelta(hours=9)
+
+
+def line_datetime_value(dt):
+    # LINE datetimepicker examples use a lower-case t separator.
+    return dt.strftime("%Y-%m-%dt%H:%M")
+
+
+def manual_event_datetime_value(dt):
+    return dt.strftime("%Y/%m/%d %H:%M:%S")
+
+
+def parse_line_datetime(value):
+    value = (value or "").strip()
+    for fmt in (
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M",
+        "%Y-%m-%dt%H:%M:%S",
+        "%Y-%m-%dt%H:%M",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y/%m/%d %H:%M",
+    ):
+        try:
+            return datetime.strptime(value, fmt)
+        except ValueError:
+            pass
+    return None
+
+
+def parse_time_only(value):
+    value = (value or "").strip()
+    match = re.search(r'(?<!\d)(\d{1,2})[:：時](\d{1,2})(?:分)?(?!\d)', value)
+    if not match:
+        return None
+    hour = int(match.group(1))
+    minute = int(match.group(2))
+    if hour > 23 or minute > 59:
+        return None
+    now = jst_now()
+    return now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+
+def postback_event_time(event):
+    params = event.get("postback", {}).get("params", {}) or {}
+    if "datetime" in params:
+        return parse_line_datetime(params["datetime"])
+    if "time" in params:
+        return parse_time_only(params["time"])
+    if "date" in params:
+        try:
+            picked = datetime.strptime(params["date"], "%Y-%m-%d")
+            now = jst_now()
+            return picked.replace(hour=now.hour, minute=now.minute, second=0)
+        except ValueError:
+            return None
+    return None
+
+
 def extract_datetime(line):
     # 形式1: [2026/02/22 22:36:12]
     match1 = re.search(r'\[(\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2})\]', line)
@@ -82,9 +143,31 @@ def manual_event_display(label):
     }.get(label, label)
 
 
-def call_manual_event(label, source="line"):
+def parse_manual_text_command(text):
+    label = None
+    if any(k in text for k in ["うんち", "うんこ", "便", "poop"]):
+        label = "poop"
+    elif any(k in text for k in ["おしっこ", "尿", "pee"]):
+        label = "pee"
+    elif any(k in text for k in ["入出", "入退", "入っただけ", "entry"]):
+        label = "entry_only"
+
+    if not label:
+        return None, None
+
+    event_time = parse_time_only(text)
+    explicit_manual = any(k in text for k in ["にして", "修正", "登録", "記録", "手動"])
+    if event_time or explicit_manual:
+        return label, event_time
+    return None, None
+
+
+def call_manual_event(label, source="line", event_time=None):
     params = {"label": label, "source": source}
     headers = {}
+    if event_time is not None:
+        params["datetime"] = manual_event_datetime_value(event_time)
+        params["timestamp"] = str(int(event_time.timestamp()))
     if MANUAL_EVENT_TOKEN:
         params["token"] = MANUAL_EVENT_TOKEN
         headers["Authorization"] = f"Bearer {MANUAL_EVENT_TOKEN}"
@@ -101,32 +184,32 @@ def call_manual_event(label, source="line"):
     return body
 
 
-def toilet_action_template():
+def immediate_toilet_action_template():
     return {
         "type": "template",
-        "altText": "トイレ判定を修正できます",
+        "altText": "直近のトイレ判定を修正できます",
         "template": {
             "type": "buttons",
             "title": "直近の判定を修正",
-            "text": "直近15分の記録を手動ラベルで上書きします",
+            "text": "時刻指定なし。現在時刻で登録します",
             "actions": [
                 {
                     "type": "postback",
                     "label": "うんちにする",
                     "data": "action=manual_event&label=poop",
-                    "displayText": "直近をうんちにする"
+                    "displayText": "今をうんちにする"
                 },
                 {
                     "type": "postback",
                     "label": "おしっこにする",
                     "data": "action=manual_event&label=pee",
-                    "displayText": "直近をおしっこにする"
+                    "displayText": "今をおしっこにする"
                 },
                 {
                     "type": "postback",
                     "label": "入出のみにする",
                     "data": "action=manual_event&label=entry_only",
-                    "displayText": "直近を入出のみにする"
+                    "displayText": "今を入出のみにする"
                 },
                 {
                     "type": "uri",
@@ -136,6 +219,54 @@ def toilet_action_template():
             ]
         }
     }
+
+
+def timed_toilet_action_template():
+    now = jst_now()
+    min_dt = now - timedelta(days=2)
+    max_dt = now + timedelta(minutes=5)
+    return {
+        "type": "template",
+        "altText": "時刻を指定してトイレ判定を登録できます",
+        "template": {
+            "type": "buttons",
+            "title": "時刻指定で登録",
+            "text": "日時を選ぶと、その時刻の手動ラベルとして登録します",
+            "actions": [
+                {
+                    "type": "datetimepicker",
+                    "label": "うんち時刻指定",
+                    "data": "action=manual_event&label=poop",
+                    "mode": "datetime",
+                    "initial": line_datetime_value(now),
+                    "min": line_datetime_value(min_dt),
+                    "max": line_datetime_value(max_dt)
+                },
+                {
+                    "type": "datetimepicker",
+                    "label": "おしっこ時刻指定",
+                    "data": "action=manual_event&label=pee",
+                    "mode": "datetime",
+                    "initial": line_datetime_value(now),
+                    "min": line_datetime_value(min_dt),
+                    "max": line_datetime_value(max_dt)
+                },
+                {
+                    "type": "datetimepicker",
+                    "label": "入出のみ時刻指定",
+                    "data": "action=manual_event&label=entry_only",
+                    "mode": "datetime",
+                    "initial": line_datetime_value(now),
+                    "min": line_datetime_value(min_dt),
+                    "max": line_datetime_value(max_dt)
+                }
+            ]
+        }
+    }
+
+
+def toilet_action_templates():
+    return [immediate_toilet_action_template(), timed_toilet_action_template()]
 
 
 def handle_postback(event):
@@ -155,10 +286,12 @@ def handle_postback(event):
             reply_messages(reply_token, [{"type": "text", "text": "不明なラベルです。"}])
         return
 
+    event_time = postback_event_time(event)
     try:
-        result = call_manual_event(label, source="line_postback")
+        result = call_manual_event(label, source="line_postback", event_time=event_time)
         status = result.get("status", "ok") if isinstance(result, dict) else "ok"
-        text = f"直近の記録を「{manual_event_display(label)}」にしました。({status})"
+        time_text = manual_event_datetime_value(event_time) if event_time else "現在時刻"
+        text = f"{time_text} の記録を「{manual_event_display(label)}」にしました。({status})"
     except Exception as e:
         print("Manual event error:", e)
         text = f"手動ラベルの登録に失敗しました: {e}"
@@ -174,8 +307,7 @@ def get_today_lines(path):
     if not os.path.exists(path):
         return []
 
-    jst_now = datetime.utcnow() + timedelta(hours=9)
-    today = jst_now.date()
+    today = jst_now().date()
 
     results = []
     with open(path, "r", encoding="utf-8") as f:
@@ -191,8 +323,7 @@ def get_today_lines(path):
 # 直近N分のログ取得
 # ==============================
 def get_recent_lines(lines, minutes=30):
-    jst_now = datetime.utcnow() + timedelta(hours=9)
-    threshold = jst_now - timedelta(minutes=minutes)
+    threshold = jst_now() - timedelta(minutes=minutes)
 
     recent = []
     for l in lines:
@@ -281,8 +412,7 @@ def count_events(lines, target_label):
 # 体重平均取得
 # ==============================
 def get_today_weight_average(lines):
-    jst_now = datetime.utcnow() + timedelta(hours=9)
-    today = jst_now.date()
+    today = jst_now().date()
 
     weights = []
     for l in lines:
@@ -364,6 +494,18 @@ def callback():
     user_msg = event["message"].get("text", "")
     print("User:", user_msg)
 
+    manual_label, manual_time = parse_manual_text_command(user_msg)
+    if manual_label:
+        try:
+            result = call_manual_event(manual_label, source="line_text", event_time=manual_time)
+            status = result.get("status", "ok") if isinstance(result, dict) else "ok"
+            time_text = manual_event_datetime_value(manual_time) if manual_time else "現在時刻"
+            reply_messages(reply_token, [{"type": "text", "text": f"{time_text} の記録を「{manual_event_display(manual_label)}」にしました。({status})"}])
+        except Exception as e:
+            print("Manual text event error:", e)
+            reply_messages(reply_token, [{"type": "text", "text": f"手動ラベルの登録に失敗しました: {e}"}])
+        return "OK", 200
+
     is_toilet = any(k in user_msg for k in ["トイレ", "おしっこ", "うんこ", "うんち", "便"])
     is_summary = any(k in user_msg for k in ["まとめ", "今日", "報告"])
     is_now = any(k in user_msg for k in ["今", "状況", "なにしてる"])
@@ -388,7 +530,7 @@ def callback():
     # =========================
     # ② 本処理
     # =========================
-    jst_now = datetime.utcnow() + timedelta(hours=9)
+    now = jst_now()
     avg_weight = None  # push送信ブロックで参照するため先に初期化
     include_toilet_buttons = False
 
@@ -435,7 +577,7 @@ def callback():
     elif is_summary:
         lines = get_today_lines(CAMERA_LOG)
         summary = get_gemini_summary(lines, "今日一日")
-        msg = f"【今日({jst_now.strftime('%m/%d')})】\n{summary}"
+        msg = f"【今日({now.strftime('%m/%d')})】\n{summary}"
 
     else:  # is_now
         lines = get_today_lines(CAMERA_LOG)
@@ -451,7 +593,7 @@ def callback():
         messages = [{"type": "text", "text": msg}]
 
         if include_toilet_buttons:
-            messages.append(toilet_action_template())
+            messages.extend(toilet_action_templates())
 
         if is_weight and avg_weight is not None:
             image_url = f"{PUBLIC_BASE_URL}/shared_summary/last_month_weight.png"
