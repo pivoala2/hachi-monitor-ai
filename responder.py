@@ -165,17 +165,18 @@ def parse_manual_text_command(text):
 
 
 def call_manual_event(label, source="line", event_time=None):
-    params = {"label": label, "source": source}
+    payload = {"label": label, "source": source}
+    params = {}
     headers = {}
     if event_time is not None:
-        params["datetime"] = manual_event_datetime_value(event_time)
-        params["timestamp"] = str(int(event_time.timestamp()))
+        payload["timestamp"] = int(event_time.timestamp())
+        payload["note"] = manual_event_datetime_value(event_time)
     if MANUAL_EVENT_TOKEN:
         params["token"] = MANUAL_EVENT_TOKEN
         headers["Authorization"] = f"Bearer {MANUAL_EVENT_TOKEN}"
 
     url = f"{CAT_SCALE_BASE_URL}/manual_event"
-    res = requests.post(url, params=params, headers=headers, timeout=8)
+    res = requests.post(url, params=params, json=payload, headers=headers, timeout=8)
     try:
         body = res.json()
     except Exception:
