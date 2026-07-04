@@ -158,7 +158,7 @@ def parse_manual_text_command(text):
         return None, None
 
     event_time = parse_time_only(text)
-    explicit_manual = any(k in text for k in ["にして", "修正", "登録", "記録", "手動"])
+    explicit_manual = any(k in text for k in ['にして', '修正', '登録', '記録', '手動', 'した', 'したよ', 'しました'])
     if event_time or explicit_manual:
         return label, event_time
     return None, None
