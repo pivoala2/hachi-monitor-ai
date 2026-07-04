@@ -1,4 +1,5 @@
 import os
+import calendar
 import requests
 import threading
 import re
@@ -41,6 +42,12 @@ def line_datetime_value(dt):
 
 def manual_event_datetime_value(dt):
     return dt.strftime("%Y/%m/%d %H:%M:%S")
+
+
+def manual_event_timestamp_value(dt):
+    # event_time is a naive JST wall-clock datetime. Convert it to Unix seconds
+    # without depending on the container's local timezone.
+    return calendar.timegm((dt - timedelta(hours=9)).timetuple())
 
 
 def parse_line_datetime(value):
@@ -170,7 +177,7 @@ def call_manual_event(label, source="line", event_time=None):
     params = {}
     headers = {}
     if event_time is not None:
-        payload["timestamp"] = int(event_time.timestamp())
+        payload["timestamp"] = manual_event_timestamp_value(event_time)
         payload["note"] = manual_event_datetime_value(event_time)
     if MANUAL_EVENT_TOKEN:
         params["token"] = MANUAL_EVENT_TOKEN
