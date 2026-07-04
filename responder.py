@@ -1,5 +1,6 @@
 import os
 import requests
+import threading
 import re
 from flask import Flask, request, send_from_directory
 from datetime import datetime, timedelta
@@ -176,7 +177,7 @@ def call_manual_event(label, source="line", event_time=None):
         headers["Authorization"] = f"Bearer {MANUAL_EVENT_TOKEN}"
 
     url = f"{CAT_SCALE_BASE_URL}/manual_event"
-    res = requests.post(url, params=params, json=payload, headers=headers, timeout=8)
+    res = requests.post(url, params=params, json=payload, headers=headers, timeout=60)
     try:
         body = res.json()
     except Exception:
@@ -185,6 +186,38 @@ def call_manual_event(label, source="line", event_time=None):
     if res.status_code >= 400:
         raise RuntimeError(f"{res.status_code}: {body}")
     return body
+
+
+def manual_event_result_text(label, event_time, status="ok"):
+    time_text = manual_event_datetime_value(event_time) if event_time else "現在時刻"
+    return f"{time_text} の記録を「{manual_event_display(label)}」にしました。({status})"
+
+
+def run_manual_event_and_push(user_id, label, source="line", event_time=None):
+    try:
+        result = call_manual_event(label, source=source, event_time=event_time)
+        status = result.get("status", "ok") if isinstance(result, dict) else "ok"
+        text = manual_event_result_text(label, event_time, status)
+        print(f"Manual event recorded: label={label} source={source} status={status}")
+    except Exception as e:
+        print("Manual event async error:", e)
+        text = f"手動ラベルの登録に失敗しました: {e}"
+
+    if user_id:
+        try:
+            res = push_messages(user_id, [{"type": "text", "text": text}], timeout=5)
+            print("Manual event push:", res.status_code, res.text)
+        except Exception as e:
+            print("Manual event push error:", e)
+
+
+def start_manual_event_task(user_id, label, source="line", event_time=None):
+    thread = threading.Thread(
+        target=run_manual_event_and_push,
+        args=(user_id, label, source, event_time),
+        daemon=True,
+    )
+    thread.start()
 
 
 def immediate_toilet_action_template():
@@ -274,6 +307,7 @@ def toilet_action_templates():
 
 def handle_postback(event):
     reply_token = event.get("replyToken")
+    user_id = event.get("source", {}).get("userId")
     data = event.get("postback", {}).get("data", "")
     params = parse_qs(data)
     action = params.get("action", [""])[0]
@@ -290,17 +324,10 @@ def handle_postback(event):
         return
 
     event_time = postback_event_time(event)
-    try:
-        result = call_manual_event(label, source="line_postback", event_time=event_time)
-        status = result.get("status", "ok") if isinstance(result, dict) else "ok"
-        time_text = manual_event_datetime_value(event_time) if event_time else "現在時刻"
-        text = f"{time_text} の記録を「{manual_event_display(label)}」にしました。({status})"
-    except Exception as e:
-        print("Manual event error:", e)
-        text = f"手動ラベルの登録に失敗しました: {e}"
-
     if reply_token:
-        reply_messages(reply_token, [{"type": "text", "text": text}])
+        time_text = manual_event_datetime_value(event_time) if event_time else "現在時刻"
+        reply_messages(reply_token, [{"type": "text", "text": f"{time_text} の「{manual_event_display(label)}」を受け付けました。反映したら知らせます。"}], timeout=3)
+    start_manual_event_task(user_id, label, source="line_postback", event_time=event_time)
 
 
 # ==============================
@@ -655,14 +682,12 @@ def callback():
 
     manual_label, manual_time = parse_manual_text_command(user_msg)
     if manual_label:
+        time_text = manual_event_datetime_value(manual_time) if manual_time else "現在時刻"
         try:
-            result = call_manual_event(manual_label, source="line_text", event_time=manual_time)
-            status = result.get("status", "ok") if isinstance(result, dict) else "ok"
-            time_text = manual_event_datetime_value(manual_time) if manual_time else "現在時刻"
-            reply_messages(reply_token, [{"type": "text", "text": f"{time_text} の記録を「{manual_event_display(manual_label)}」にしました。({status})"}])
+            reply_messages(reply_token, [{"type": "text", "text": f"{time_text} の「{manual_event_display(manual_label)}」を受け付けました。反映したら知らせます。"}], timeout=3)
         except Exception as e:
-            print("Manual text event error:", e)
-            reply_messages(reply_token, [{"type": "text", "text": f"手動ラベルの登録に失敗しました: {e}"}])
+            print("Manual quick reply error:", e)
+        start_manual_event_task(user_id, manual_label, source="line_text", event_time=manual_time)
         return "OK", 200
 
     is_toilet = any(k in user_msg for k in ["トイレ", "おしっこ", "うんこ", "うんち", "便"])
