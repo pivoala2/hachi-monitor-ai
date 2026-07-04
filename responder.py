@@ -702,11 +702,24 @@ def callback():
     is_now = any(k in user_msg for k in ["今", "状況", "なにしてる"])
     is_weight = any(k in user_msg for k in ["体重", "kg", "きろ"])
     is_edit = any(k in user_msg for k in ["編集", "履歴", "修正"])
+    is_toilet_fix = "トイレ修正" in user_msg or (is_toilet and any(k in user_msg for k in ["修正", "編集", "記録", "ラベル"]))
 
     print("is_edit =", is_edit)
+    print("is_toilet_fix =", is_toilet_fix)
     print("user_msg =", user_msg)
 
-    if not (is_toilet or is_summary or is_now or is_weight or is_edit):
+    if not (is_toilet or is_summary or is_now or is_weight or is_edit or is_toilet_fix):
+        return "OK", 200
+
+    if is_toilet_fix:
+        try:
+            reply_messages(
+                reply_token,
+                [{"type": "text", "text": "修正する内容を選んでください。"}] + toilet_action_templates(),
+                timeout=3,
+            )
+        except Exception as e:
+            print("Toilet fix reply error:", e)
         return "OK", 200
 
     # =========================
