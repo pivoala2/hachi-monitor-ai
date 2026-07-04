@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
 IMAGE_DIR = os.getenv("IMAGE_DIR", "/images")
 SUMMARY_FILE = "/app/summary.txt"
 
@@ -60,7 +61,7 @@ def analyze_latest():
 
     try:
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
+            model=GEMINI_MODEL,
             contents=[get_part(prev_path), get_part(curr_path), prompt]
         )
 
@@ -103,7 +104,7 @@ def generate_daily_summary():
     """
 
     response = client.models.generate_content(
-        model="gemini-2.0-flash",
+        model=GEMINI_MODEL,
         contents=prompt
     )
 

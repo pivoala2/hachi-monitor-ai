@@ -23,6 +23,7 @@ SHARED_LOG = "/app/shared_summary/summary.txt"
 
 LINE_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
 
 
 # ==============================
@@ -467,7 +468,7 @@ def get_gemini_summary(log_lines, target_type="今"):
 
     try:
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
+            model=GEMINI_MODEL,
             contents=[prompt]
         )
         return response.text.strip()
